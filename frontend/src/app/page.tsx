@@ -20,6 +20,7 @@ import {
   roleEnum,
 } from "@/lib/types/messages";
 import { sendMessage } from "@/actions/messages";
+import StyledMessage from "@/components/shared/markdown-block";
 
 export default function ChatInterface() {
   const [input, setInput] = useState("");
@@ -30,11 +31,11 @@ export default function ChatInterface() {
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    const currentMessages: Message[] = messages
+    const currentMessages: Message[] = messages;
     currentMessages.push({
       role: roleEnum.Values.user,
       content: input,
-    })
+    });
     setMessages(currentMessages);
     setInput("");
     const messageRequestPayload: MessagePayload = messagePayloadSchema.parse({
@@ -68,7 +69,7 @@ export default function ChatInterface() {
     <div className="flex items-center justify-center min-h-screen bg-gray-100 p-4">
       <Card className="w-full max-w-2xl">
         <CardHeader>
-          <CardTitle>Chat Interface</CardTitle>
+          <CardTitle>Cat Picker</CardTitle>
         </CardHeader>
         <CardContent>
           <ScrollArea className="h-[60vh] pr-4" ref={scrollAreaRef}>
@@ -77,17 +78,13 @@ export default function ChatInterface() {
                 key={`${m.role}-${m.content}-${Math.random().toString(36)}`}
                 className={`mb-4 ${m.role === roleEnum.Values.user ? "text-right" : "text-left"}`}
               >
-                <span
-                  className={`inline-block p-2 rounded-lg ${m.role === roleEnum.Values.user ? "bg-primary text-primary-foreground" : "bg-secondary text-secondary-foreground"}`}
-                >
-                  {m.content}
-                </span>
+                <StyledMessage role={m.role} content={m.content} />
               </div>
             ))}
             {isTyping && (
               <div className="text-left">
                 <span className="inline-block p-2 rounded-lg bg-secondary text-secondary-foreground">
-                  Bot is typing...
+                  Finding the cats...
                 </span>
               </div>
             )}

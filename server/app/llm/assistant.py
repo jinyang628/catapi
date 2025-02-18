@@ -1,16 +1,17 @@
+import asyncio
 import json
 import os
-from threading import Thread
 from typing import Optional
 
 import aiohttp
-from openai import AsyncAssistantEventHandler, AsyncOpenAI
+from openai import AsyncOpenAI
 from openai.types.beta.thread import Thread
 
 client = AsyncOpenAI()
 
 CAT_API_KEY = os.environ.get("CAT_API_KEY")
 CAT_API_BASE_URL = "https://api.thecatapi.com/v1"
+SEARCH_CAT_FUNCTION_NAME = "search_cats"
 
 
 class AsyncCatAssistant:
@@ -25,12 +26,12 @@ class AsyncCatAssistant:
         instance = cls(thread_id)
         instance.assistant = await client.beta.assistants.create(
             name="Cat Picker",
-            instructions="You are a helpful assistant that helps users pick the most suitable cat picture.",
+            instructions="You are a helpful assistant that helps users pick the most suitable cat picture. You should terminate after getting the cat picture and not make any more requests. You should output the image URL in your response in markdown format.",
             tools=[
                 {
                     "type": "function",
                     "function": {
-                        "name": "search_cats",
+                        "name": SEARCH_CAT_FUNCTION_NAME,
                         "description": "Search for cat pictures based on breed, temperament, or size.",
                         "parameters": {
                             "type": "object",
@@ -47,7 +48,7 @@ class AsyncCatAssistant:
                     },
                 }
             ],
-            model="gpt-4",
+            model="gpt-4o-mini",
         )
         if not instance.thread_id:
             thread: Thread = await client.beta.threads.create()
@@ -60,59 +61,69 @@ class AsyncCatAssistant:
         if not self.assistant:
             raise ValueError("Assistant is not set")
 
-        # Add the user's message to the thread
-        await client.beta.threads.messages.create(
-            thread_id=self.thread_id, role="user", content=user_input
-        )
+        try:
+            await client.beta.threads.messages.create(
+                thread_id=self.thread_id, role="user", content=user_input
+            )
 
-        event_handler = AsyncAssistantEventHandler()
+            run = await client.beta.threads.runs.create(
+                thread_id=self.thread_id, assistant_id=self.assistant.id
+            )
 
-        async with client.beta.threads.runs.stream(
-            thread_id=self.thread_id,
-            assistant_id=self.assistant.id,
-            event_handler=event_handler,
-        ) as stream:
-            async for event in stream:
-                if event.event == "thread.run.requires_action":
-                    # The assistant is requesting to call a function
-                    run_id = event.data.get("run_id")
-                    tool_calls = (
-                        event.data.get("required_action", {})
-                        .get("submit_tool_outputs", {})
-                        .get("tool_calls", [])
-                    )
+            while True:
+                run = await client.beta.threads.runs.retrieve(
+                    thread_id=self.thread_id, run_id=run.id
+                )
 
+                if run.status == "requires_action":
+                    # Handle tool calls
                     tool_outputs = []
-                    for tool_call in tool_calls:
-                        if tool_call["function"]["name"] == "search_cats":
-                            # Parse the arguments and call the CatAPI
-                            args = json.loads(tool_call["function"]["arguments"])
+                    for tool_call in run.required_action.submit_tool_outputs.tool_calls:
+                        if tool_call.function.name == SEARCH_CAT_FUNCTION_NAME:
+                            args = json.loads(tool_call.function.arguments)
                             cat_result = await self.search_cats(**args)
-
-                            # Submit the function output back to the assistant
                             tool_outputs.append(
-                                {"tool_call_id": tool_call["id"], "output": json.dumps(cat_result)}
+                                {"tool_call_id": tool_call.id, "output": json.dumps(cat_result)}
                             )
 
-                    # Submit the tool outputs back to the assistant
+                    # Submit tool outputs
                     await client.beta.threads.runs.submit_tool_outputs(
-                        thread_id=self.thread_id, run_id=run_id, tool_outputs=tool_outputs
+                        thread_id=self.thread_id, run_id=run.id, tool_outputs=tool_outputs
                     )
 
-            await stream.until_done()
+                elif run.status == "completed":
+                    # Get the latest message
+                    messages = await client.beta.threads.messages.list(
+                        thread_id=self.thread_id, order="desc", limit=1
+                    )
 
-        # Retrieve the final response from the assistant
-        final_response = await event_handler.get_final_messages()
-        print(final_response)
-        content = final_response[0].content[0]
-        if hasattr(content, "text"):
-            return content.text.value
-        elif hasattr(content, "image_file"):
-            return content.image_file.url
-        elif hasattr(content, "image_url"):
-            return content.image_url.url
-        else:
-            return str(content)
+                    if not messages.data:
+                        return "No response generated. Please try again."
+
+                    message = messages.data[0]
+                    if not message.content:
+                        return "Empty response received. Please try again."
+
+                    content = message.content[0]
+                    if hasattr(content, "text"):
+                        return content.text.value
+                    elif hasattr(content, "image_file"):
+                        return content.image_file.url
+                    elif hasattr(content, "image_url"):
+                        return content.image_url.url
+                    else:
+                        return str(content)
+
+                elif run.status in ["failed", "cancelled", "expired"]:
+                    return f"Run failed with status: {run.status}"
+
+                # Wait before checking again
+                await asyncio.sleep(1)
+
+        except Exception as e:
+            error_message = f"An error occurred: {str(e)}"
+            print(error_message)
+            return error_message
 
     async def search_cats(
         self,
@@ -123,38 +134,48 @@ class AsyncCatAssistant:
         """
         Search for cats using the CatAPI based on given criteria
         """
-        params = {}
-        if breed:
-            params["breed_ids"] = breed
+        try:
+            params = {}
+            if breed:
+                params["breed_ids"] = breed
 
-        headers = {"x-api-key": CAT_API_KEY}
+            headers = {"x-api-key": CAT_API_KEY}
 
-        async with aiohttp.ClientSession() as session:
-            # First get breed information if needed
-            if temperament or size:
+            async with aiohttp.ClientSession() as session:
+                # First get breed information if needed
+                if temperament or size:
+                    async with session.get(
+                        f"{CAT_API_BASE_URL}/breeds",
+                        headers={k: str(v) for k, v in headers.items() if v is not None},
+                    ) as response:
+                        response.raise_for_status()
+                        breeds = await response.json()
+
+                        # Filter breeds based on temperament and size
+                        if temperament:
+                            breeds = [
+                                b
+                                for b in breeds
+                                if temperament.lower() in b.get("temperament", "").lower()
+                            ]
+                        if size:
+                            breeds = [
+                                b for b in breeds if b.get("size", "").lower() == size.lower()
+                            ]
+
+                        if breeds:
+                            params["breed_ids"] = ",".join([b["id"] for b in breeds])
+
                 async with session.get(
-                    f"{CAT_API_BASE_URL}/breeds",
+                    f"{CAT_API_BASE_URL}/images/search",
+                    params=params,
                     headers={k: str(v) for k, v in headers.items() if v is not None},
                 ) as response:
-                    breeds = await response.json()
+                    response.raise_for_status()
+                    cats = await response.json()
+                    return cats[0] if cats else {"error": "No cats found matching criteria"}
 
-                    # Filter breeds based on temperament and size
-                    if temperament:
-                        breeds = [
-                            b
-                            for b in breeds
-                            if temperament.lower() in b.get("temperament", "").lower()
-                        ]
-                    if size:
-                        breeds = [b for b in breeds if b.get("size", "").lower() == size.lower()]
-
-                    if breeds:
-                        params["breed_ids"] = ",".join([b["id"] for b in breeds])
-
-            async with session.get(
-                f"{CAT_API_BASE_URL}/images/search",
-                params=params,
-                headers={k: str(v) for k, v in headers.items() if v is not None},
-            ) as response:
-                cats = await response.json()
-                return cats[0] if cats else {}
+        except aiohttp.ClientError as e:
+            return {"error": f"API request to Cat API failed: {str(e)}"}
+        except Exception as e:
+            return {"error": f"Unexpected error during cat search: {str(e)}"}
