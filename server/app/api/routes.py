@@ -2,8 +2,8 @@ import logging
 
 from fastapi import APIRouter
 
-from app.controllers.students import StudentsController
-from app.services.students import StudentsService
+from app.controllers.messages import MessagesController
+from app.services.messages import MessagesService
 
 log = logging.getLogger(__name__)
 
@@ -18,16 +18,16 @@ async def status():
     return {"status": "ok"}
 
 
-### Students
+### Messages
 
 
-def get_students_controller_router():
-    service = StudentsService()
-    return StudentsController(service=service).router
+def get_messages_controller_router():
+    service = MessagesService()
+    return MessagesController(service=service).router
 
 
 router.include_router(
-    get_students_controller_router(),
-    tags=["students"],
-    prefix="/api/students",
+    get_messages_controller_router(),
+    tags=["messages"],
+    prefix="/api/messages",
 )
