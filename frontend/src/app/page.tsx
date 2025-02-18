@@ -30,6 +30,12 @@ export default function ChatInterface() {
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    const currentMessages: Message[] = messages
+    currentMessages.push({
+      role: roleEnum.Values.user,
+      content: input,
+    })
+    setMessages(currentMessages);
     setInput("");
     const messageRequestPayload: MessagePayload = messagePayloadSchema.parse({
       message: {
@@ -39,7 +45,8 @@ export default function ChatInterface() {
       thread_id: threadId,
     });
     const response = await sendMessage(messageRequestPayload);
-    setMessages((prev) => [...prev, response.message]);
+    currentMessages.push(response.message);
+    setMessages(currentMessages);
     if (!response.thread_id) {
       throw new Error("Thread ID is not returned");
     }
