@@ -12,6 +12,7 @@ client = AsyncOpenAI()
 CAT_API_KEY = os.environ.get("CAT_API_KEY")
 CAT_API_BASE_URL = "https://api.thecatapi.com/v1"
 SEARCH_CAT_FUNCTION_NAME = "search_cats"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 class AsyncCatAssistant:
@@ -26,22 +27,20 @@ class AsyncCatAssistant:
         instance = cls(thread_id)
         instance.assistant = await client.beta.assistants.create(
             name="Cat Picker",
-            instructions="You are a helpful assistant that helps users pick the most suitable cat picture. You should terminate after getting the cat picture and not make any more requests. You should output the image URL in your response in markdown format.",
+            instructions=f"You are a helpful assistant that helps users pick the most suitable cat picture given the user's description of the cat. You should terminate after getting the cat picture and not make any more requests. You should output the image URL in your response in markdown format. Here is the list of cats you can filter for where the id is the breed id which you must output:\n{json.load(open(f'{BASE_DIR}/breeds.json'))}",
             tools=[
                 {
                     "type": "function",
                     "function": {
                         "name": SEARCH_CAT_FUNCTION_NAME,
-                        "description": "Search for cat pictures based on breed, temperament, or size.",
+                        "description": "Search for cat pictures based on breed or temperament using the Cat API.",
                         "parameters": {
                             "type": "object",
                             "properties": {
-                                "breed": {"type": "string", "description": "The breed of the cat."},
-                                "temperament": {
+                                "breed": {
                                     "type": "string",
-                                    "description": "The temperament of the cat.",
+                                    "description": "The breed of the cat. Your output should be a 4 character id in the Cat API",
                                 },
-                                "size": {"type": "string", "description": "The size of the cat."},
                             },
                             "required": [],
                         },
@@ -105,14 +104,7 @@ class AsyncCatAssistant:
                         return "Empty response received. Please try again."
 
                     content = message.content[0]
-                    if hasattr(content, "text"):
-                        return content.text.value
-                    elif hasattr(content, "image_file"):
-                        return content.image_file.url
-                    elif hasattr(content, "image_url"):
-                        return content.image_url.url
-                    else:
-                        return str(content)
+                    return content.text.value if hasattr(content, "text") else ""
 
                 elif run.status in ["failed", "cancelled", "expired"]:
                     return f"Run failed with status: {run.status}"
@@ -128,12 +120,12 @@ class AsyncCatAssistant:
     async def search_cats(
         self,
         breed: Optional[str] = None,
-        temperament: Optional[str] = None,
-        size: Optional[str] = None,
     ) -> dict:
         """
         Search for cats using the CatAPI based on given criteria
         """
+        if not breed:
+            return {}
         try:
             params = {}
             if breed:
@@ -142,30 +134,6 @@ class AsyncCatAssistant:
             headers = {"x-api-key": CAT_API_KEY}
 
             async with aiohttp.ClientSession() as session:
-                # First get breed information if needed
-                if temperament or size:
-                    async with session.get(
-                        f"{CAT_API_BASE_URL}/breeds",
-                        headers={k: str(v) for k, v in headers.items() if v is not None},
-                    ) as response:
-                        response.raise_for_status()
-                        breeds = await response.json()
-
-                        # Filter breeds based on temperament and size
-                        if temperament:
-                            breeds = [
-                                b
-                                for b in breeds
-                                if temperament.lower() in b.get("temperament", "").lower()
-                            ]
-                        if size:
-                            breeds = [
-                                b for b in breeds if b.get("size", "").lower() == size.lower()
-                            ]
-
-                        if breeds:
-                            params["breed_ids"] = ",".join([b["id"] for b in breeds])
-
                 async with session.get(
                     f"{CAT_API_BASE_URL}/images/search",
                     params=params,
